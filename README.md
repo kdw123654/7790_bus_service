@@ -183,7 +183,7 @@ bus_project/
 
 ---
 
-## 1. 일별 총 세션수 vs 복귀 사용자 세션수 추이
+## 1. 일별 총 세션수 & 복귀 사용자 세션수 추이
 
 ```mermaid
 xychart-beta
