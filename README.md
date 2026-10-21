@@ -38,7 +38,7 @@ flowchart TD
     end
 
     subgraph MLOps["실시간 온라인 학습 엔진"]
-        ONLINE["3분할 요일군 독립 학습<br>(평일 / 금요일 심야 / 주말)"]
+        ONLINE["3분할 요일군 독립 학습<br>(평일 / 금요일  / 주말)"]
         EWMA["고속 적응형 EWMA (5석 오차 시 40% 반영)"]
         SGD["Online SGD + RBF 커널 리지 회귀"]
     end
