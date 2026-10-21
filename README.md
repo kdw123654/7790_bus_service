@@ -9,6 +9,7 @@
 [![Architecture](https://img.shields.io/badge/Architecture-Event--Driven%20MLOps-blueviolet?style=flat)]()
 
 ---
+서비스 링크: https://bus-project-e9nd.onrender.com/
 
 ## 1. Project Overview (프로젝트 개요)
 
