@@ -10,7 +10,7 @@
 
 ---
 
-##1. Project Overview (프로젝트 개요)
+## 1. Project Overview (프로젝트 개요)
 
 - **문제 정의**: 
   - 7790번 광역버스는 출퇴근·통학 시간대 입석 금지와 극심한 수요 집중으로 인해, 정류장 도착 직전에 잔여 좌석이 0석으로 급감하여 승차 거부되는 문제가 빈번함.
@@ -22,7 +22,7 @@
 
 ---
 
-##2. System Architecture (시스템 구조)
+## 2. System Architecture (시스템 구조)
 
 ```mermaid
 flowchart TD
