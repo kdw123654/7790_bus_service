@@ -1,1 +1,175 @@
-# 7790_bus_service
+# 🚌 7790 타요? (Tayeo) - 광역버스 실시간 좌석 예측 & MLOps 시스템
+
+> **"내가 지금 줄을 서면 앉아갈 수 있을까?"**  
+> 수원대학교 ↔ 사당역 7790번 광역버스의 불확실한 잔여 좌석을 실시간 온라인 머신러닝(Online SGD + Empirical Bayes)과 도메인 특화 데이터 파이프라인으로 정밀 예측하는 서비스입니다.
+
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Scikit-Learn](https://img.shields.io/badge/scikit--learn-Online%20Ridge-F7931E?style=flat&logo=scikit-learn&logoColor=white)](https://scikit-learn.org/)
+[![Architecture](https://img.shields.io/badge/Architecture-Event--Driven%20MLOps-blueviolet?style=flat)]()
+
+---
+
+## 📌 1. Project Overview (프로젝트 개요)
+
+- **문제 정의**: 
+  - 7790번 광역버스는 출퇴근·통학 시간대 입석 금지와 극심한 수요 집중으로 인해, 정류장 도착 직전에 잔여 좌석이 0석으로 급감하여 승차 거부되는 문제가 빈번함.
+  - 기존 포털 지도 앱은 **'현재 버스에 남은 좌석'**만 보여줄 뿐, **'버스가 내 정류장에 도착했을 때 남을 좌석'**을 알려주지 못해 사용자가 줄을 설지 말지 판단할 수 없음.
+- **해결 솔루션**:
+  - 기점(협성대·봉담)에서 버스가 출발하는 순간, 선행 정류장(효행초·아이파크·신명)의 시간대별 연쇄 승차 패턴을 추론하여 **내 정류장 도착 시 최종 잔여석을 사전에 예측**.
+  - 사당역 하행 회차 대기열 및 실시간 시민 제보 데이터를 결합하여 회차 빈 차 착석 가능성 산출.
+  - 실제 배포 후 발생한 데이터 노이즈(전세버스 혼입, 1층/2층 버스 편차, 예측 플래핑)를 실시간 텔레메트리 기반으로 지속 개선한 프로덕션 엔지니어링 프로젝트.
+
+---
+
+## 🏗️ 2. System Architecture (시스템 구조)
+
+```mermaid
+flowchart TD
+    subgraph DataSources["외부 데이터 소스 & 사용자 입력"]
+        GBIS["공공데이터포털 GBIS API"]
+        SCRAPE["GBIS 직결 보조 스크래퍼"]
+        CROWD["학우 실시간 혼잡도 제보"]
+    end
+
+    subgraph Ingestion["데이터 정제 & 필터링 계층"]
+        FILTER["전세버스/예약버스 필터<br>(79사·9000번대 식별)"]
+        DEDUP["텔레메트리 45분 윈도우<br>중복 제거 엔진"]
+    end
+
+    subgraph MLOps["실시간 온라인 학습 엔진"]
+        ONLINE["3분할 요일군 독립 학습<br>(평일 / 금요일 심야 / 주말)"]
+        EWMA["고속 적응형 EWMA (5석 오차 시 40% 반영)"]
+        SGD["Online SGD + RBF 커널 리지 회귀"]
+    end
+
+    subgraph Serving["예측 & UX 안정화 계층"]
+        ANCHOR["기점 초기 예측 영구 앵커링"]
+        DAMPING["변동성 ±4석 한도 클램핑"]
+        API["FastAPI 엔드포인트"]
+    end
+
+    subgraph Client["사용자 인터페이스"]
+        UI["인터랙티브 노선도 & 착석 게이지"]
+    end
+
+    GBIS --> FILTER
+    SCRAPE --> FILTER
+    FILTER --> DEDUP
+    CROWD --> Serving
+
+    DEDUP --> ONLINE
+    ONLINE --> EWMA
+    ONLINE --> SGD
+
+    EWMA --> Serving
+    SGD --> Serving
+    Serving --> ANCHOR
+    ANCHOR --> DAMPING
+    DAMPING --> API
+    API --> UI
+```
+
+---
+
+## 💡 3. Key Engineering Challenges & Solutions (핵심 문제 해결)
+
+### Issue 1. [UX vs ML] "중간에 예측값이 자꾸 바뀌면 줄을 설 수가 없다"
+- **현상**:
+  - 버스가 효행초, 아이파크를 지나며 실제 승객이 탈 때마다 GBIS 잔여석이 줄어들고, 중간 감산 로직이 실시간 재계산되면서 수원대 도착 예측 좌석이 `40석 → 35석 → 28석`으로 계단식으로 떨어지는 **예측 플래핑(Drift/Flapping)** 발생.
+  - 학생이 기점 출발 시 "40석 남는다"는 예측을 믿고 줄을 서러 나갔는데, 걸어가는 동안 숫자가 깎여 의사결정의 신뢰가 무너짐.
+- **원인 분석**:
+  - 모델의 수학적 정확도(실시간 데이터 반영)와 사용자의 심리적 의사결정 타임라인(기점 출발 시점 1회 결정) 사이의 괴리.
+- **엔지니어링 솔루션**:
+  - **기점 초기 예측값 영구 앵커링(Lock-in)**: 버스가 기점에서 출발할 때의 예측값을 불변의 기준점으로 메모리에 잠금.
+  - **변동성 3~5석($\pm$4석) 한도 미세 조절(Damping)**: 버스가 이동하며 실시간 편차가 발생하더라도 초기 예측 기준 $\pm$4석 이내에서만 완만하게 반응하도록 클램핑(Clamping) 알고리즘 적용.
+- **결과**: 사용자의 "줄 서기 결심"을 끝까지 안정적으로 지켜주면서도 실시간 변동성을 흡수하는 최적의 UX 달성.
+
+---
+
+### Issue 2. [Data Noise] 통학 불가 '외부 전세버스'의 일반 버스 오인 사태
+- **현상**:
+  - GBIS API 상에서 통학 학생이 탈 수 없는 출퇴근 임차 전세버스가 일반 7790번과 동일한 노선 ID로 섞여 들어와, 사용자에게 빈 차로 도착할 것처럼 잘못 안내되는 문제 발생.
+- **원인 분석**:
+  - 정규 노선버스 면허(경기 70사 수원 / 경기 76아 화성)와 외부 전세버스 면허(경기 79사, 78사 등)의 메타데이터 혼재.
+- **엔지니어링 솔루션**:
+  - **다단계 차량 면허 식별 필터** 구현:
+    1. 차량 번호판 대역 정규식 분석 (`경기79`, `79사`, `9000번대` 임차 번호 식별)
+    2. API 예약 플래그 및 배차 시간대 매칭
+    3. 백엔드 도착 목록, 노선도 마커, MLOps 학습 파이프라인 전역에서 원천 차단.
+- **결과**: 일반 학생이 탈 수 있는 순수 정규 차량만 100% 필터링되어 대기 혼선 원천 방지.
+
+---
+
+### Issue 3. [MLOps] 배치(Batch) 학습의 한계와 실시간 3분할 온라인 학습
+- **현상**:
+  - 주말마다 모델을 재학습하는 전통적 배치 방식으로는 **비 오는 날, 축제/시험 기간, 금요일 심야 귀가 대란** 등의 급격한 패턴 변화를 즉시 따라가지 못함.
+- **엔지니어링 솔루션**:
+  - **Online Incremental SGD + Empirical Bayes 하이브리드** 구축:
+    - 버스가 정류장을 통과할 때마다 실시간 텔레메트리를 수집하여 즉시 파라미터 업데이트.
+    - **적응형 학습률**: 예측 오차가 5석 이상 벌어지면 $\alpha = 0.40$(40% 고속 적응), 5석 미만일 때는 $\alpha = 0.25$(안정 반영).
+    - **3분할 요일군 모델 분리**: `평일(월~목)` 정규 통학 / `금요일` 심야(21:30~00:40) 귀향 및 모임 / `주말·공휴일` 감차 운행을 각각 독립된 가중치와 버킷으로 분리 학습.
+- **결과**: 외부 이벤트 발생 시 다음 버스 1~2대 만에 오차를 스스로 교정하는 자체 치유(Self-healing) 모델 구현.
+
+---
+
+### Issue 4. [Model Validation] 1층 버스(45/49석) vs 2층 버스(71석) 이종 차종 분리 및 실측 검증
+- **검증 결과 (2026-10-21 수요일 21회 운행 전수 실측 대조)**:
+  - 출근 극피크(06:48)에 투입된 **1층 49석 버스(`1265`)**:
+    - 기점 출발 당시 예측치: 효행초 32석 / 아이파크 19석 / 신명 17석 / **수원대 16석**
+    - 실제 정류장 도착 실측치: 효행초 34석 / 아이파크 20석 / 신명 17석 / **수원대 16석**
+    - **신명아파트와 수원대입구에서 기점 예측치 오차 0석(100% 적중)** 기록.
+  - 상행 4개 정류장 평균 절대 오차(MAE): **$\pm$3.2 ~ 4.4석** 달성.
+
+| 정류장 | 평균 절대 오차 (MAE) | $\pm$3석 이내 적중률 | $\pm$5석 이내 적중률 |
+| :--- | :---: | :---: | :---: |
+| **효행초등학교정문** | **$\pm$3.2석** | **71.4%** | **85.7%** |
+| **아이파크정문** | **$\pm$3.8석** | **61.9%** | **81.0%** |
+| **신명아파트** | **$\pm$3.5석** | **66.7%** | **81.0%** |
+| **수원대입구** | **$\pm$4.4석** | **57.1%** | **76.2%** |
+
+---
+
+## 🛠️ 4. Tech Stack (기술 스택)
+
+- **Backend**: Python 3.11, FastAPI, Uvicorn, Requests
+- **Machine Learning**: Scikit-Learn (Ridge), NumPy, Online SGD, Empirical Bayes, RBF Kernels
+- **Data Engineering**: Real-time GBIS Telemetry Pipeline, CSV Stream Logger, Atomic File Persistence
+- **Frontend**: Vanilla JavaScript (ES6+), Tailwind CSS, Responsive SVG Map Engine
+
+---
+
+## 📂 5. Project Directory Structure
+
+```text
+bus_project/
+├── core/
+│   └── config.py               # 정류장 XAI 프로필, 노선 메타데이터, 학사일정 판별
+├── data/
+│   ├── sadang_telemetry.csv    # 사당역 하행 실측 탑승 데이터셋
+│   └── upstream_telemetry.csv  # 상행 4개 정류장 연쇄 승차 텔레메트리
+├── models/
+│   └── sadang_online_model.json # 3분할 요일군 모델 파라미터 및 EWMA 버킷
+├── services/
+│   ├── gbis_client.py          # 공공데이터 API 및 전세버스/차종 판별
+│   ├── online_learner.py       # 실시간 온라인 MLOps 엔진 (SGD + Bayes)
+│   ├── prediction_engine.py    # 기점 앵커링 & ±4석 댐핑 예측 엔진
+│   ├── telemetry_logger.py     # 원자적 텔레메트리 스트림 로거
+│   └── crowd_service.py        # 학우 집단지성 실시간 제보 처리기
+├── static/
+│   ├── js/app.js               # 실시간 UI 렌더링 & 노선도 SVG 바인딩
+│   └── css/style.css           # 커스텀 테마 스타일
+├── main.py                     # FastAPI 앱 및 백그라운드 스케줄러
+└── README.md
+```
+
+---
+
+## 🚀 6. What I Learned (엔지니어링 회고)
+
+1. **"ML 모델의 수치적 최적화"보다 중요한 것은 "사용자의 의사결정 맥락"**:
+   - 실시간 데이터를 기계적으로 반영하는 것이 항상 최선의 UX가 아님을 배웠습니다. 사용자가 버스를 타러 갈지 결정하는 타임라인을 이해하고, 기점 예측 앵커링과 댐핑 클램프를 통해 '신뢰할 수 있는 예측'을 설계하는 경험을 쌓았습니다.
+2. **도메인 지식이 결합된 데이터 엔지니어링의 힘**:
+   - 광역버스 API의 단순 수치만으로는 전세버스인지, 1층 버스인지 구분할 수 없었습니다. 면허 체계와 차량 등록 번호 규칙을 파악하여 데이터 수집단에서 필터링함으로써 모델의 쓰레기 데이터(Garbage-in) 유입을 원천 차단했습니다.
+3. **무중단 운영 환경에서의 MLOps**:
+   - 복잡한 대형 모델 대신 가볍고 빠른 Online SGD와 Bayesian EWMA를 결합하여, 서버 재시작 없이도 실시간 데이터로 스스로 진화하는 안정적인 서비스 파이프라인을 구축했습니다.
